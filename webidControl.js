@@ -1,6 +1,7 @@
 // Render a control to record the webids we have for this agent
 /* eslint-disable multiline-ternary */
 import * as UI from 'solid-ui'
+import { updateMany } from './contactLogic'
 
 const $rdf = UI.rdf
 const ns = UI.ns
@@ -20,9 +21,14 @@ const webidPanelBackgroundColor = '#ffe6ff'
 
 // Logic
 export async function addWebIDToContacts (person, webid, context) {
-  if (!webid.startsWith('https:')) { /// @@ well we will have other protcols like DID
-    throw new Error('Does not look like a webid, must start with https:')
+  // check this is a url
+  try {
+    const url = new URL(webid)
+  } catch (error) {
+    throw new Error(`${WEBID_NOUN}: ${webid} is not a valid url.`)
   }
+
+  // create a person's webID
   console.log(`Adding to ${person} a ${WEBID_NOUN}: ${webid}.`)
   const kb = context.kb
   const vcardURLThing = kb.bnode()
@@ -31,12 +37,19 @@ export async function addWebIDToContacts (person, webid, context) {
     $rdf.st(vcardURLThing, ns.rdf('type'), ns.vcard('WebID'), person.doc()),
     $rdf.st(vcardURLThing, ns.vcard('value'), webid, person.doc())
   ]
-  await kb.updater.update([], insertables)
+  const groups = kb.each(null, ns.vcard('hasMember'), person)
+  groups.forEach(group => {
+    insertables.push($rdf.st(person, ns.owl('sameAs'), kb.sym(webid), group.doc()))
+  })
+  try {
+    await updateMany([], insertables)
+  } catch (err) { throw new Error(`Could not create webId ${WEBID_NOUN}: ${webid}.`) }
 }
 
+// alain attention parametres ont changés
 export async function removeWebIDFromContacts (person, webid, context) {
   const { kb } = context
-  console.log(`Removing from ${person} their ${WEBID_NOUN}: ${webid}.`)
+  // remove webID from card
   const existing = kb.each(person, ns.vcard('url'), null, person.doc())
     .filter(urlObject => kb.holds(urlObject, ns.rdf('type'), ns.vcard('WebID'), person.doc()))
     .filter(urlObject => kb.holds(urlObject, ns.vcard('value'), webid, person.doc()))
@@ -50,6 +63,60 @@ export async function removeWebIDFromContacts (person, webid, context) {
     $rdf.st(vcardURLThing, ns.vcard('value'), webid, person.doc())
   ]
   await kb.updater.update(deletables, [])
+
+  // remove webIDs from groups
+  const groups = kb.each(null, ns.vcard('hasMember'), person)
+  const removeFromGroups = []
+  groups.forEach(group => {
+    removeFromGroups.push($rdf.st(person, ns.owl('sameAs'), kb.sym(webid), group.doc()))
+  })
+  await updateMany(removeFromGroups)
+}
+
+// Trace things the same as this - other IDs for same thing
+// returns as array of node
+export function getSameAs (kb, thing, doc) { // Should this recurse?
+  const found = new Set()
+  const agenda = new Set([thing.uri])
+
+  while (agenda.size) {
+    const uri = Array.from(agenda)[0] // clumsy
+    agenda.delete(uri)
+    if (found.has(uri)) continue
+    found.add(uri)
+    const node = kb.sym(uri)
+    kb.each(node, ns.owl('sameAs'), null, doc)
+      .concat(kb.each(null, ns.owl('sameAs'), node, doc))
+      .forEach(next => {
+        console.log('        OWL sameAs found ' + next)
+        agenda.add(next.uri)
+      })
+    kb.each(node, ns.schema('sameAs'), null, doc)
+      .concat(kb.each(null, ns.schema('sameAs'), node, doc))
+      .forEach(next => {
+        console.log('        Schema sameAs found ' + next)
+        agenda.add(next.uri)
+      })
+  }
+  found.delete(thing.uri) // don't want the one we knew about
+  return Array.from(found).map(uri => kb.sym(uri)) // return as array of nodes
+}
+
+// find person webIDs
+export function getPersonas (kb, person) {
+  const lits = vcardWebIDs(kb, person).concat(getSameAs(kb, person, person.doc()))
+  const strings = new Set(lits.map(lit => lit.value)) // remove dups
+  const personas = [...strings].map(uri => kb.sym(uri)) // The UI tables do better with Named Nodes than Literals
+  personas.sort() // for repeatability
+  personas.filter(x => !x.sameTerm(person))
+  return personas
+}
+
+export function vcardWebIDs (kb, person) {
+  return kb.each(person, ns.vcard('url'), null, person.doc())
+    .filter(urlObject => kb.holds(urlObject, ns.rdf('type'), ns.vcard('WebID'), person.doc()))
+    .map(urlObject => kb.any(urlObject, ns.vcard('value'), null, person.doc()))
+    .filter(x => !!x) // remove nulls
 }
 
 // The control rendered by this module
@@ -57,45 +124,9 @@ export async function renderWedidControl (person, dataBrowserContext) {
   // IDs which are as WebId in VCARD data
   // like  :me vcard:hasURL [ a vcard:WebId; vcard:value <https://...foo> ]
   //
-  function vcardWebIDs (person) {
-    return kb.each(person, ns.vcard('url'), null, person.doc())
-      .filter(urlObject => kb.holds(urlObject, ns.rdf('type'), ns.vcard('WebID'), person.doc()))
-      .map(urlObject => kb.any(urlObject, ns.vcard('value'), null, person.doc()))
-      .filter(x => !!x) // remove nulls
-  }
-
   function _getAliases (person) {
     return kb.allAliases(person) // All the terms linked by sameAs
       .filter(x => !x.sameTerm(person)) // Except this one
-  }
-
-  // Trace things the same as this - other IDs for same thing
-  // returns as array of node
-  function getSameAs (thing, doc) { // Should this recurse?
-    const found = new Set()
-    const agenda = new Set([thing.uri])
-
-    while (agenda.size) {
-      const uri = Array.from(agenda)[0] // clumsy
-      agenda.delete(uri)
-      if (found.has(uri)) continue
-      found.add(uri)
-      const node = kb.sym(uri)
-      kb.each(node, ns.owl('sameAs'), null, doc)
-        .concat(kb.each(null, ns.owl('sameAs'), node, doc))
-        .forEach(next => {
-          console.log('        OWL sameAs found ' + next)
-          agenda.add(next.uri)
-        })
-      kb.each(node, ns.schema('sameAs'), null, doc)
-        .concat(kb.each(null, ns.schema('sameAs'), node, doc))
-        .forEach(next => {
-          console.log('        Schema sameAs found ' + next)
-          agenda.add(next.uri)
-        })
-    }
-    found.delete(thing.uri) // don't want the one we knew about
-    return Array.from(found).map(uri => kb.sym(uri)) // return as array of nodes
   }
 
   function renderNewRow (webidObject) {
@@ -157,14 +188,6 @@ export async function renderWedidControl (person, dataBrowserContext) {
     return d
   }
 
-  function getPersonas () {
-    const lits = vcardWebIDs(person).concat(getSameAs(person, person.doc()))
-    const strings = new Set(lits.map(lit => lit.value)) // remove dups
-    const personas = [...strings].map(uri => kb.sym(uri)) // The UI tables do better with Named Nodes than Literals
-    personas.sort() // for repeatability
-    personas.filter(x => !x.sameTerm(person))
-    return personas
-  }
   function _renderPersona (persona) {
     function profileOpenHandler (_event) {
       profileIsVisible = !profileIsVisible
@@ -242,7 +265,7 @@ export async function renderWedidControl (person, dataBrowserContext) {
   } // renderPersona2
 
   async function refreshWebIDTable () {
-    const personas = getPersonas()
+    const personas = getPersonas(kb, person)
     console.log('WebId personas: ' + person + ' -> ' + personas.map(p => p.uri).join(',\n  '))
     prompt.style.display = personas.length ? 'none' : ''
     // utils.syncTableToArrayReOrdered(table, personas, renderNewRow)
@@ -277,7 +300,7 @@ export async function renderWedidControl (person, dataBrowserContext) {
   const div = dom.createElement('div')
   div.style = 'border-radius:0.3em; border: 0.1em solid #888;' // padding: 0.8em;
 
-  if (getPersonas().length === 0 && !editable) {
+  if (getPersonas(kb, person).length === 0 && !editable) {
     div.style.display = 'none'
     return div // No point listing an empty list you can't change
   }

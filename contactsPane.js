@@ -241,8 +241,8 @@ export default {
               'style',
               matches
                 ? selectedPeople[row.subject.uri]
-                    ? 'background-color: #cce;'
-                    : ''
+                  ? 'background-color: #cce;'
+                  : ''
                 : 'display: none;'
             )
           }
@@ -608,7 +608,7 @@ export default {
           cardMain.innerHTML = ''
           const groupIndex = kb.any(book, ns.vcard('groupIndex'))
           try {
-            await fetch.load(groupIndex)
+            await kb.fetcher.load(groupIndex)
           } catch (e) {
             console.log('Error: Group index  NOT loaded:' + e + '\n')
           }
@@ -619,7 +619,7 @@ export default {
           if (!name) return // cancelled by user
           let group
           try {
-            group = await saveNewGroup(book, name)
+            group = await saveNewGroup(book, name, kb)
           } catch (err) {
             console.log("Error: can't save new group:" + err)
             cardMain.innerHTML = 'Failed to save group' + err
@@ -662,7 +662,7 @@ export default {
           book = findBookFromGroups(book)
           let person
           try {
-            person = await saveNewContact(book, name, selectedGroups)
+            person = await saveNewContact(book, name, selectedGroups, kb)
           } catch (err) {
             const msg = "Error: can't save new contact: " + err
             console.log(msg)
